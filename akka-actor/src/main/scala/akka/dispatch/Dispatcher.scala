@@ -182,6 +182,21 @@ class Dispatcher(
     mbox.suspended.tryUnlock
     reRegisterForExecution(mbox)
   }
+
+  // override this to limit maxThreads to something sane
+  override def newExecutor(maxThreads: Int) = {
+    val maxReasonableThreads = executorServiceFactoryProvider match {
+      case config: ThreadPoolConfig ⇒
+        // keep a thread free to dispatch to actors
+        // (especially since ActorBasedExecutor is implemented
+        // with an actor)
+        config.corePoolSize - 1
+      case _ ⇒
+        // people are on their own!
+        Int.MaxValue
+    }
+    super.newExecutor(math.min(maxThreads, maxReasonableThreads))
+  }
 }
 
 /**

@@ -249,6 +249,27 @@ abstract class MessageDispatcher extends Serializable {
    * Returns the amount of tasks queued for execution
    */
   def tasks: Long = _tasks.get
+
+  /**
+   * Returns a [[java.util.concurrent.ExecutorService]] which delegates
+   * to the dispatcher. The advantage is that you can share a thread
+   * pool with the dispatcher, for example. You might use this executor
+   * with a library which allows you to pass in an executor for that
+   * library's use.
+   *
+   * It is safe (and recommended) to shutdown() and awaitTermination()
+   * on the dispatcher when you're done with it.
+   *
+   * The dispatcher honors maxThreads only on a best-effort basis.
+   * For example the default dispatcher will limit you to less than
+   * its core thread pool size, because at least one thread is needed to
+   * dispatch actor messages. You can configure the dispatcher's
+   * core and max threads in akka.conf.
+   *
+   * @param maxThreads maximum number of threads to use at once
+   */
+  def newExecutor(maxThreads: Int = Int.MaxValue): ExecutorService =
+    new ActorBasedExecutor(maxThreads)(this)
 }
 
 /**
