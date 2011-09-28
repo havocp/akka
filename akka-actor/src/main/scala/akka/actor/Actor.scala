@@ -503,6 +503,15 @@ trait Actor {
   def tryReply(message: Any): Boolean = channel.tryTell(message)(self)
 
   /**
+   * Akka Scala & Java API
+   *
+   * When the future completes, try to send its result or exception to
+   * the original sender of the message currently being processed.
+   *
+   */
+  def replyWith(future: Future[Any]) = future.pipeTo(channel)(self)
+
+  /**
    * Returns an unmodifiable Java Collection containing the linked actors,
    * please note that the backing map is thread-safe but not immutable
    */

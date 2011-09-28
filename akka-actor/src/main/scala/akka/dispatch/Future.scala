@@ -7,7 +7,7 @@ package akka.dispatch
 
 import akka.AkkaException
 import akka.event.EventHandler
-import akka.actor.{ Actor, UntypedChannel, Scheduler, Timeout, ExceptionChannel }
+import akka.actor.{ Actor, Channel, UntypedChannel, Scheduler, Timeout, ExceptionChannel }
 import scala.Option
 import akka.japi.{ Procedure, Function ⇒ JFunc, Option ⇒ JOption }
 
@@ -490,10 +490,19 @@ sealed trait Future[+T] extends japi.Future[T] {
   /**
    * When this Future is completed, apply the provided function to the
    * Future. If the Future has already been completed, this will apply
-   * immediately. Will not be called in case of a timeout, which also holds if
+   * immediately (but asynchronously, in another thread).
+   * Will not be called in case of a timeout, which also holds if
    * corresponding Promise is attempted to complete after expiry. Multiple
    * callbacks may be registered; there is no guarantee that they will be
    * executed in a particular order.
+   *
+   * The provided function runs in another thread outside of any actor,
+   * creating the potential for concurrency bugs.
+   * To avoid the risk, use onCompleteTell() to send an arbitrary message
+   * to another actor or future; or use pipeTo() to send this future's
+   * value as a message to another actor or future.
+   * onCompleteTell() and pipeTo() are safer and more efficient than
+   * onComplete().
    */
   def onComplete(func: Future[T] ⇒ Unit): this.type
 
@@ -531,6 +540,52 @@ sealed trait Future[+T] extends japi.Future[T] {
   }
 
   def onTimeout(func: Future[T] ⇒ Unit): this.type
+
+  private def onCompleteTell[A, M <: A](channel: Channel[A], f: T ⇒ M)(implicit sender: UntypedChannel): this.type = {
+    def send = value.get.fold(channel.sendException(_), { v ⇒ channel.tryTell(f(v)) })
+    if (isCompleted) {
+      // optimization: sendException/tryTell are already async so no need to dispatch via onComplete
+      send
+      this
+    } else {
+      onComplete { _ ⇒ send }
+    }
+  }
+
+  /**
+   * Sends a message to a channel (usually another actor or future)
+   * when this future completes.
+   * If the future completes with an exception, sends the exception with
+   * channel.sendException() instead of sending the message.
+   *
+   * This method is safer and more efficient than the more general
+   * onComplete() because there's no callback function that runs in
+   * another thread, and an extra dispatch can be avoided if the future
+   * is already complete.
+   *
+   * @param channel channel to send a message to
+   * @param msg message to send
+   * @param sender implicit message sender available to recipient
+   * @returns this future
+   */
+  def onCompleteTell[A, M <: A](channel: Channel[A], msg: M)(implicit sender: UntypedChannel): this.type =
+    onCompleteTell(channel, { _: T ⇒ msg })
+
+  /**
+   * When the future is completed, send its value or exception to the
+   * channel (usually another actor or future).
+   *
+   * This method is safer and more efficient than the more general
+   * onComplete() because there's no callback function that runs in
+   * another thread, and an extra dispatch can be avoided if the future
+   * is already complete.
+   *
+   * @param channel channel to receive the future's value
+   * @param sender the implicit sender of the future's value
+   * @returns this future
+   */
+  def pipeTo[A >: T](channel: Channel[A])(implicit sender: UntypedChannel): this.type =
+    onCompleteTell(channel, identity[T] _)
 
   def orElse[A >: T](fallback: ⇒ A): Future[A]
 
