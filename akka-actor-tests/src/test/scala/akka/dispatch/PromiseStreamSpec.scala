@@ -62,7 +62,7 @@ class PromiseStreamSpec extends JUnitSuite {
     val a = q.dequeue()
     val b = q.dequeue()
     q += 1
-    Thread.sleep(500)
+    Thread.sleep(500 + 100) // need +100 to be sure timeout occurs
     q += (2, 3)
     val c = q.dequeue()
     val d = q.dequeue()

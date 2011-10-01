@@ -267,9 +267,10 @@ object TypedActor {
             val f = actor ? m
             try { f.await } catch { case _: FutureTimeoutException ⇒ }
             f.value match {
-              case None | Some(Right(null))     ⇒ if (m.returnsJOption_?) JOption.none[Any] else None
-              case Some(Right(joption: AnyRef)) ⇒ joption
-              case Some(Left(ex))               ⇒ throw ex
+              case None | Some(Right(null))               ⇒ if (m.returnsJOption_?) JOption.none[Any] else None
+              case Some(Right(joption: AnyRef))           ⇒ joption
+              case Some(Left(ex: FutureTimeoutException)) ⇒ if (m.returnsJOption_?) JOption.none[Any] else None
+              case Some(Left(ex))                         ⇒ throw ex
             }
           case m ⇒
             (actor ? m).get.asInstanceOf[AnyRef]

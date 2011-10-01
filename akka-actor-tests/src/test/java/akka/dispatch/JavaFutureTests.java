@@ -79,7 +79,8 @@ public class JavaFutureTests {
       });
 
       assertTrue(latch.await(5000, TimeUnit.MILLISECONDS));
-      assertTrue(f.value().isEmpty());
+      assertTrue(f.value().get().isLeft());
+      assertTrue(f.exception().get() instanceof akka.dispatch.FutureTimeoutException);
     }
 
     @Test public void mustBeAbleToExecuteAnOnCompleteCallback() throws Throwable {

@@ -42,7 +42,8 @@ class ActorTimeoutSpec
         try {
           val f = (echo ? "hallo").mapTo[String]
           intercept[FutureTimeoutException] { f.await }
-          f.value must be(None)
+          f.result must be(None)
+          f.isExpired must be(true)
         } finally { echo.stop }
       }
     }

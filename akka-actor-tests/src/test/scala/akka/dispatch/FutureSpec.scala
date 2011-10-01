@@ -459,7 +459,7 @@ class FutureSpec extends WordSpec with MustMatchers with Checkers with BeforeAnd
         latch.open
         assert(f2.get === 10)
 
-        val f3 = Future({ Thread.sleep(10); 5 }, 10 millis)
+        val f3 = Future({ Thread.sleep(100); 5 }, 10 millis)
         filterException[FutureTimeoutException] {
           intercept[FutureTimeoutException] {
             f3.get
@@ -569,7 +569,7 @@ class FutureSpec extends WordSpec with MustMatchers with Checkers with BeforeAnd
         assert(Dispatchers.defaultGlobalDispatcher.tasks === 0)
       }
 
-      "shouldNotAddOrRunCallbacksAfterFailureToBeCompletedBeforeExpiry" in {
+      "shouldAddAndRunCallbacksAfterFailureToBeCompletedBeforeExpiry" in {
         val latch = new StandardLatch
         val f = Promise[Int](0)
         Thread.sleep(25)
@@ -579,8 +579,14 @@ class FutureSpec extends WordSpec with MustMatchers with Checkers with BeforeAnd
 
         f.complete(Right(1)) //Shouldn't complete the Future since it is expired
 
-        assert(f.value.isEmpty) //Shouldn't be completed
-        assert(!latch.isOpen) //Shouldn't run the listener
+        //Should be completed with FutureTimeoutException
+        assert(f.value.isDefined)
+        assert(f.value.get.isLeft) //Should be completed with FutureTimeoutException
+        assert(f.exception.get.isInstanceOf[FutureTimeoutException])
+        //Should run the listener
+        // (runs it async so we have to wait a beat to make it likely to have run)
+        Thread.sleep(2)
+        assert(latch.isOpen)
       }
 
       "futureDataFlowShouldEmulateBlocking1" in {

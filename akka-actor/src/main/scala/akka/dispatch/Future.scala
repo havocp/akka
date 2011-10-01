@@ -367,7 +367,7 @@ object Future {
     }
 }
 
-sealed trait Future[+T] extends japi.Future[T] {
+sealed trait Future[+T] extends japi.Future[T] with Expirable {
 
   implicit def dispatcher: MessageDispatcher
 
@@ -381,7 +381,8 @@ sealed trait Future[+T] extends japi.Future[T] {
 
   /**
    * Blocks awaiting completion of this Future, then returns the resulting value,
-   * or throws the completed exception
+   * or throws the completed exception.
+   * The completed exception may be a FutureTimeoutException if the future expired.
    *
    * Scala & Java API
    *
@@ -390,9 +391,10 @@ sealed trait Future[+T] extends japi.Future[T] {
   def get: T = this.await.resultOrException.get
 
   /**
-   * Blocks the current thread until the Future has been completed or the
-   * timeout has expired. In the case of the timeout expiring a
-   * FutureTimeoutException will be thrown.
+   * Blocks the current thread until the Future has been completed.
+   * If the future is completed with a FutureTimeoutException, throws that
+   * exception. Does not throw other exceptions the future may be completed
+   * with.
    */
   def await: Future[T]
 
@@ -402,11 +404,17 @@ sealed trait Future[+T] extends japi.Future[T] {
    * the <code>atMost</code> parameter. The timeout will be the lesser value of
    * 'atMost' and the timeout supplied at the constructuion of this Future.  In
    * the case of the timeout expiring a FutureTimeoutException will be thrown.
+   * However, if 'atMost' was shorter than the future's own timeout, the future
+   * may not be completed with a FutureTimeoutException when await() times out.
    * Other callers of this method are not affected by the additional bound
-   * imposed by <code>atMost</code>.
+   * imposed by <code>atMost</code>. Only FutureTimeoutException is thrown,
+   * the future may be completed with other exceptions but they will not
+   * be thrown.
    */
   def await(atMost: Duration): Future[T]
 
+  // FIXME should we still special case FutureTimeoutException for as[] ?
+  // (what about for typed actor methods?)
   /**
    * Await completion of this Future and return its value if it conforms to A's
    * erased type. Will throw a ClassCastException if the value does not
@@ -416,8 +424,9 @@ sealed trait Future[+T] extends japi.Future[T] {
   def as[A](implicit m: Manifest[A]): Option[A] = {
     try await catch { case _: FutureTimeoutException ⇒ }
     value match {
-      case None           ⇒ None
-      case Some(Left(ex)) ⇒ throw ex
+      case None                                   ⇒ None
+      case Some(Left(ex: FutureTimeoutException)) ⇒ None
+      case Some(Left(ex))                         ⇒ throw ex
       case Some(Right(v)) ⇒
         try { Some(BoxedType(m.erasure).cast(v).asInstanceOf[A]) } catch {
           case c: ClassCastException ⇒
@@ -435,8 +444,9 @@ sealed trait Future[+T] extends japi.Future[T] {
   def asSilently[A](implicit m: Manifest[A]): Option[A] = {
     try await catch { case _: FutureTimeoutException ⇒ }
     value match {
-      case None           ⇒ None
-      case Some(Left(ex)) ⇒ throw ex
+      case None                                   ⇒ None
+      case Some(Left(ex: FutureTimeoutException)) ⇒ None
+      case Some(Left(ex))                         ⇒ throw ex
       case Some(Right(v)) ⇒
         try Some(BoxedType(m.erasure).cast(v).asInstanceOf[A])
         catch { case _: ClassCastException ⇒ None }
@@ -449,12 +459,27 @@ sealed trait Future[+T] extends japi.Future[T] {
   final def isCompleted: Boolean = value.isDefined
 
   /**
-   * Tests whether this Future's timeout has expired.
+   * Tests whether this Future has been completed with a FutureTimeoutException.
+   * Also, forces a check for whether it should be completed with
+   * FutureTimeoutException and completes it if necessary. This happens if
+   * a future is just past its expiration time and the expiration timer
+   * task simply has not been run yet.
    *
-   * Note that an expired Future may still contain a value, or it may be
-   * completed with a value.
+   * Note that a Future may be "older" than its timeout but not expired, if
+   * it was completed with something other than FutureTimeoutException.
    */
-  def isExpired: Boolean
+  def isExpired: Boolean = {
+    value match {
+      case Some(Left(ex: FutureTimeoutException)) ⇒ true
+      case Some(_)                                ⇒ false
+      case None ⇒ {
+        if (checkExpired() <= 0)
+          isExpired // recheck, should now be completed
+        else
+          false
+      }
+    }
+  }
 
   def timeout: Timeout
 
@@ -490,10 +515,9 @@ sealed trait Future[+T] extends japi.Future[T] {
   /**
    * When this Future is completed, apply the provided function to the
    * Future. If the Future has already been completed, this will apply
-   * immediately. Will not be called in case of a timeout, which also holds if
-   * corresponding Promise is attempted to complete after expiry. Multiple
-   * callbacks may be registered; there is no guarantee that they will be
-   * executed in a particular order.
+   * immediately. Multiple callbacks may be registered; there is no
+   * guarantee that they will be executed in a particular order.
+   * If a future times out, it will be completed with a FutureTimeoutException.
    */
   def onComplete(func: Future[T] ⇒ Unit): this.type
 
@@ -522,6 +546,8 @@ sealed trait Future[+T] extends japi.Future[T] {
    *     case NumberFormatException ⇒ target ! "wrong format"
    *   }
    * </pre>
+   * The exception will be a FutureTimeoutException if the future
+   * times out.
    */
   final def onException(pf: PartialFunction[Throwable, Unit]): this.type = onComplete {
     _.value match {
@@ -530,8 +556,30 @@ sealed trait Future[+T] extends japi.Future[T] {
     }
   }
 
-  def onTimeout(func: Future[T] ⇒ Unit): this.type
+  /**
+   * If the future times out (is completed with FutureTimeoutException),
+   * then invoke the given function. The function is invoked asynchronously
+   * on a separate thread.
+   *
+   * @param func function to invoke on timeout
+   * @returns this future
+   */
+  def onTimeout(func: Future[T] ⇒ Unit): this.type = onComplete { f ⇒
+    f.value match {
+      case Some(Left(ex: FutureTimeoutException)) ⇒
+        func(f)
+      case _ ⇒
+    }
+  }
 
+  /**
+   * Returns a new future that has the value of this future,
+   * unless this future times out, in which case new future
+   * has the value of fallback (or an exception thrown by fallback).
+   *
+   * @param fallback computes the value if future expires
+   * @returns a future containing fallback if the original future expired
+   */
   def orElse[A >: T](fallback: ⇒ A): Future[A]
 
   /**
@@ -680,6 +728,14 @@ sealed trait Future[+T] extends japi.Future[T] {
     case Some(Right(r)) ⇒ Some(r)
     case _              ⇒ None
   }
+
+  protected def checkExpired(): Long = {
+    checkExpired(currentTimeInNanos)
+  }
+
+  @inline
+  protected def currentTimeInNanos: Long = MILLIS.toNanos(System.currentTimeMillis) //TODO Switch to math.abs(System.nanoTime)?
+  //TODO: the danger of Math.abs is that it could break the ordering of time. So I would not recommend an abs.
 }
 
 package japi {
@@ -804,6 +860,10 @@ class DefaultPromise[T](val timeout: Timeout)(implicit val dispatcher: MessageDi
   private val _startTimeInNanos = currentTimeInNanos
   private val ref = new AtomicReference[FState[T]](FState())
 
+  if (timeout != Timeout.never) {
+    dispatcher.expire(this)
+  }
+
   @tailrec
   private def awaitUnsafe(waitTimeNanos: Long): Boolean = {
     if (value.isEmpty && waitTimeNanos > 0) {
@@ -814,27 +874,29 @@ class DefaultPromise[T](val timeout: Timeout)(implicit val dispatcher: MessageDi
 
       awaitUnsafe(waitTimeNanos - (currentTimeInNanos - start))
     } else {
-      value.isDefined
+      if (isExpired)
+        throw value.get.left.get
+      else
+        value.isDefined
     }
   }
 
   def await(atMost: Duration): this.type = {
+    val remaining = checkExpired()
     val waitNanos =
       if (timeout.duration.isFinite && atMost.isFinite)
-        atMost.toNanos min timeLeft()
+        atMost.toNanos min remaining
       else if (atMost.isFinite)
         atMost.toNanos
       else if (timeout.duration.isFinite)
-        timeLeft()
+        remaining
       else Long.MaxValue //If both are infinite, use Long.MaxValue
 
     if (awaitUnsafe(waitNanos)) this
-    else throw new FutureTimeoutException("Futures timed out after [" + NANOS.toMillis(waitNanos) + "] milliseconds")
+    else throw new FutureTimeoutException("await timed out after [" + NANOS.toMillis(waitNanos) + "] milliseconds but Future itself did not expire in that time")
   }
 
   def await = await(timeout.duration)
-
-  def isExpired: Boolean = if (timeout.duration.isFinite) timeLeft() <= 0 else false
 
   def value: Option[Either[Throwable, T]] = ref.get.value
 
@@ -845,12 +907,7 @@ class DefaultPromise[T](val timeout: Timeout)(implicit val dispatcher: MessageDi
         def tryComplete: List[Future[T] ⇒ Unit] = {
           val cur = ref.get
           if (cur.value.isDefined) Nil
-          else if ( /*cur.value.isEmpty && */ isExpired) {
-            //Empty and expired, so remove listeners
-            //TODO Perhaps cancel existing onTimeout listeners in the future here?
-            ref.compareAndSet(cur, FState()) //Try to reset the state to the default, doesn't matter if it fails
-            Nil
-          } else {
+          else {
             if (ref.compareAndSet(cur, FState(Option(value), Nil))) cur.listeners
             else tryComplete
           }
@@ -871,7 +928,6 @@ class DefaultPromise[T](val timeout: Timeout)(implicit val dispatcher: MessageDi
     def tryAddCallback(): Boolean = {
       val cur = ref.get
       if (cur.value.isDefined) true
-      else if (isExpired) false
       else if (ref.compareAndSet(cur, cur.copy(listeners = func :: cur.listeners))) false
       else tryAddCallback()
     }
@@ -881,47 +937,21 @@ class DefaultPromise[T](val timeout: Timeout)(implicit val dispatcher: MessageDi
     this
   }
 
-  def onTimeout(func: Future[T] ⇒ Unit): this.type = {
-    val runNow =
-      if (!timeout.duration.isFinite) false //Not possible
-      else if (value.isEmpty) {
-        if (!isExpired) {
-          val runnable = new Runnable {
-            def run() {
-              if (!isCompleted) {
-                if (!isExpired) Scheduler.scheduleOnce(this, timeLeftNoinline(), NANOS)
-                else func(DefaultPromise.this)
-              }
-            }
-          }
-          Scheduler.scheduleOnce(runnable, timeLeft(), NANOS)
-          false
-        } else true
-      } else false
-
-    if (runNow) Future.dispatchTask(() ⇒ notifyCompleted(func))
-
-    this
-  }
-
   final def orElse[A >: T](fallback: ⇒ A): Future[A] =
     if (timeout.duration.isFinite) {
       value match {
-        case Some(_)        ⇒ this
-        case _ if isExpired ⇒ Future[A](fallback)
-        case _ ⇒
+        case Some(Left(ex: FutureTimeoutException)) ⇒ Future[A](fallback)
+        case Some(_)                                ⇒ this
+        case None ⇒ {
           val promise = new DefaultPromise[A](Timeout.never) //TODO FIXME We can't have infinite timeout here, doesn't make sense.
-          promise completeWith this
-          val runnable = new Runnable {
-            def run() {
-              if (!isCompleted) {
-                if (!isExpired) Scheduler.scheduleOnce(this, timeLeftNoinline(), NANOS)
-                else promise complete (try { Right(fallback) } catch { case e ⇒ Left(e) })
-              }
-            }
+          onComplete { f ⇒
+            if (f.isExpired)
+              promise complete (try { Right(fallback) } catch { case e ⇒ Left(e) })
+            else
+              promise completeWith f
           }
-          Scheduler.scheduleOnce(runnable, timeLeft(), NANOS)
           promise
+        }
       }
     } else this
 
@@ -929,13 +959,13 @@ class DefaultPromise[T](val timeout: Timeout)(implicit val dispatcher: MessageDi
     try { func(this) } catch { case e ⇒ EventHandler.error(e, this, "Future onComplete-callback raised an exception") } //TODO catch, everything? Really?
   }
 
-  @inline
-  private def currentTimeInNanos: Long = MILLIS.toNanos(System.currentTimeMillis) //TODO Switch to math.abs(System.nanoTime)?
-  //TODO: the danger of Math.abs is that it could break the ordering of time. So I would not recommend an abs.
-  @inline
-  private def timeLeft(): Long = timeoutInNanos - (currentTimeInNanos - _startTimeInNanos)
-
-  private def timeLeftNoinline(): Long = timeLeft()
+  override def checkExpired(nowInNanos: Long): Long = {
+    val remaining = timeoutInNanos - (nowInNanos - _startTimeInNanos)
+    if (remaining <= 0) {
+      completeWithException(new FutureTimeoutException("Future timed out after [" + NANOS.toMillis(nowInNanos - _startTimeInNanos) + "] milliseconds"))
+    }
+    remaining
+  }
 }
 
 class ActorPromise(timeout: Timeout)(implicit dispatcher: MessageDispatcher) extends DefaultPromise[Any](timeout)(dispatcher) with UntypedChannel with ExceptionChannel[Any] {
@@ -977,10 +1007,9 @@ sealed class KeptPromise[T](suppliedValue: Either[Throwable, T])(implicit val di
   }
   def await(atMost: Duration): this.type = this
   def await: this.type = this
-  def isExpired: Boolean = true
   def timeout: Timeout = Timeout.zero
 
-  final def onTimeout(func: Future[T] ⇒ Unit): this.type = this
   final def orElse[A >: T](fallback: ⇒ A): Future[A] = this
 
+  override def checkExpired(nowInNanos: Long): Long = 0
 }

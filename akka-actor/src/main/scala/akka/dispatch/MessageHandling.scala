@@ -150,6 +150,8 @@ abstract class MessageDispatcher extends Serializable {
     }
   }
 
+  protected[akka] def expire(expirable: Expirable): Unit
+
   private val taskCleanup: () ⇒ Unit =
     () ⇒ if (_tasks.decrementAndGet() == 0) {
       guard withGuard {

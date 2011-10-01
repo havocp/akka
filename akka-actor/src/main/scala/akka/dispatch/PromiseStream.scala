@@ -168,7 +168,7 @@ class PromiseStream[A](timeout: Long) extends PromiseStreamOut[A] with PromiseSt
         } else {
           if (_pendOut.compareAndSet(po, po.tail)) {
             po.head completeWithResult elem
-            if (!po.head.isCompleted) enqueue(elem)
+            if (po.head.isExpired) enqueue(elem)
           } else enqueue(elem)
         }
       }

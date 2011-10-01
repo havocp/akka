@@ -89,6 +89,9 @@ class Dispatcher(
 
   protected[akka] val executorServiceFactory = executorServiceFactoryProvider.createExecutorServiceFactory(name)
   protected[akka] val executorService = new AtomicReference[ExecutorService](new LazyExecutorServiceWrapper(executorServiceFactory.createExecutorService))
+  // FIXME base expiration resolution on config (maybe based on the configured
+  // timeout for futures, unless expiration resolution is explicitly set?)
+  private val expirationService = new ExpirationService(TimeUnit.MILLISECONDS.toNanos(20))
 
   protected[akka] def dispatch(invocation: Envelope) = {
     val mbox = invocation.receiver.mailbox
@@ -110,6 +113,10 @@ class Dispatcher(
         EventHandler.warning(this, e.toString)
         throw e
     }
+  }
+
+  protected[akka] def expire(expirable: Expirable) {
+    expirationService.add(expirable)
   }
 
   protected[akka] def createMailbox(actor: ActorCell): Mailbox = mailboxType.create(this)

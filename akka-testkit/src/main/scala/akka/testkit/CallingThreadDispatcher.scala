@@ -7,6 +7,7 @@ import akka.event.EventHandler
 import java.util.concurrent.locks.ReentrantLock
 import java.util.LinkedList
 import java.util.concurrent.RejectedExecutionException
+import java.util.concurrent.TimeUnit
 import akka.util.Switch
 import java.lang.ref.WeakReference
 import scala.annotation.tailrec
@@ -107,6 +108,8 @@ object CallingThreadDispatcher {
 class CallingThreadDispatcher(val name: String = "calling-thread", val warnings: Boolean = true) extends MessageDispatcher {
   import CallingThreadDispatcher._
 
+  private val expirationService = new ExpirationService(TimeUnit.MILLISECONDS.toNanos(20))
+
   protected[akka] override def createMailbox(actor: ActorCell) = new CallingThreadMailbox(this)
 
   private def getMailbox(actor: ActorCell) = actor.mailbox.asInstanceOf[CallingThreadMailbox]
@@ -176,6 +179,8 @@ class CallingThreadDispatcher(val name: String = "calling-thread", val warnings:
   }
 
   protected[akka] override def executeTask(invocation: TaskInvocation) { invocation.run }
+
+  protected[akka] override def expire(expirable: Expirable) { expirationService.add(expirable) }
 
   /*
    * This method must be called with this thread's queue, which must already
