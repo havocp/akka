@@ -960,11 +960,16 @@ class DefaultPromise[T](val timeout: Timeout)(implicit val dispatcher: MessageDi
   }
 
   override def checkExpired(nowInNanos: Long): Long = {
-    val remaining = timeoutInNanos - (nowInNanos - _startTimeInNanos)
-    if (remaining <= 0) {
-      completeWithException(new FutureTimeoutException("Future timed out after [" + NANOS.toMillis(nowInNanos - _startTimeInNanos) + "] milliseconds"))
+    if (value.isDefined) {
+      // be sure dispatcher will stop trying to expire us
+      0
+    } else {
+      val remaining = timeoutInNanos - (nowInNanos - _startTimeInNanos)
+      if (remaining <= 0) {
+        completeWithException(new FutureTimeoutException("Future timed out after [" + NANOS.toMillis(nowInNanos - _startTimeInNanos) + "] milliseconds"))
+      }
+      remaining
     }
-    remaining
   }
 }
 
