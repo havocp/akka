@@ -12,6 +12,7 @@ import java.util.concurrent.{ ExecutorService, RejectedExecutionException }
 import scala.concurrent.forkjoin.ForkJoinPool
 import scala.concurrent.util.Duration
 import scala.concurrent.Awaitable
+import scala.concurrent.BatchingExecutor
 
 /**
  * The event-based ``Dispatcher`` binds a set of Actors to a thread pool backed up by a
@@ -35,9 +36,14 @@ class Dispatcher(
   val shutdownTimeout: Duration)
   extends MessageDispatcher(_prerequisites) {
 
-  private class LazyExecutorServiceDelegate(factory: ExecutorServiceFactory) extends ExecutorServiceDelegate {
+  private class LazyExecutorServiceDelegate(factory: ExecutorServiceFactory) extends ExecutorServiceDelegate with BatchingExecutor {
     lazy val executor: ExecutorService = factory.createExecutorService
     def copy(): LazyExecutorServiceDelegate = new LazyExecutorServiceDelegate(factory)
+
+    override def batchable(runnable: Runnable) = runnable match {
+      case invocation: TaskInvocation ⇒ invocation.batchable
+      case _                          ⇒ false
+    }
   }
 
   @volatile private var executorServiceDelegate: LazyExecutorServiceDelegate =
