@@ -54,7 +54,7 @@ class JavaFutureSpec extends JavaFutureTests with JUnitSuite
 @org.junit.runner.RunWith(classOf[org.scalatest.junit.JUnitRunner])
 class FutureSpec extends AkkaSpec with Checkers with BeforeAndAfterAll with DefaultTimeout {
   import FutureSpec._
-  implicit val ec: ExecutionContext = scala.concurrent.AkkaExecutionContext.batching(system.dispatcher)
+  implicit val ec: ExecutionContext = system.dispatcher
   "A Promise" when {
     "never completed" must {
       behave like emptyFuture(_(Promise().future))

@@ -36,7 +36,9 @@ class Dispatcher(
   extends MessageDispatcher(_prerequisites) {
 
   private class LazyExecutorServiceDelegate(factory: ExecutorServiceFactory) extends ExecutorServiceDelegate {
-    lazy val executor: ExecutorService = factory.createExecutorService
+    // TODO should it be configurable whether to wrap in the batching?
+    lazy val executor: ExecutorService =
+      scala.concurrent.AkkaExecutionContext.batchingExecutorService(factory.createExecutorService)
     def copy(): LazyExecutorServiceDelegate = new LazyExecutorServiceDelegate(factory)
   }
 
