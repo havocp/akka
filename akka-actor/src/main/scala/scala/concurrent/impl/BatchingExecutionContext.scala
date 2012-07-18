@@ -15,12 +15,12 @@ import scala.concurrent.{ Awaitable, BlockContext, ExecutionContext, ExecutionCo
 import scala.util.control.NonFatal
 
 /**
- * An ExecutionContext which attempts to keep related Runnable batched on the
+ * An execute() function which attempts to keep related Runnable batched on the
  * same thread, which may give better performance by 1) avoiding dispatch
  * through the ExecutionContext's queue and 2) creating a simple
  * "CPU affinity" for a related chain of tasks.
  */
-private class BatchingExecutionContext(val delegate: ExecutionContext) extends ExecutionContextExecutor {
+private class BatchingExecute(val delegate: Runnable ⇒ Unit) extends Function1[Runnable, Unit] {
 
   // invariant: if "_tasksLocal.get ne null" then we are inside
   // BatchingRunnable.run; if it is null, we are outside
@@ -56,7 +56,7 @@ private class BatchingExecutionContext(val delegate: ExecutionContext) extends E
           // make a new BatchingRunnable and send it to
           // another thread
           _tasksLocal set Nil
-          delegate.execute(new BatchingRunnable(list))
+          delegate(new BatchingRunnable(list))
         }
       }
 
@@ -66,7 +66,7 @@ private class BatchingExecutionContext(val delegate: ExecutionContext) extends E
   }
 
   // ONLY BatchingRunnable should be sent directly
-  // to delegate.execute()
+  // to delegate
   private class BatchingRunnable(val initial: List[Runnable]) extends Runnable {
     // this method runs in the delegate ExecutionContext's thread
     override def run(): Unit = {
@@ -78,7 +78,19 @@ private class BatchingExecutionContext(val delegate: ExecutionContext) extends E
           _tasksLocal set initial
           while (nonEmpty) {
             val next = pop()
-            try next.run() catch { case NonFatal(e) ⇒ reportFailure(e) }
+            try {
+              next.run()
+            } catch {
+              case t: Throwable ⇒
+                // if one task throws, move the
+                // remaining tasks to another thread
+                // so we can throw the exception
+                // up to the invoking executor
+                val remaining = _tasksLocal.get
+                _tasksLocal set Nil
+                delegate(new BatchingRunnable(remaining))
+                throw t // rethrow
+            }
           }
         } finally {
           _tasksLocal.remove()
@@ -88,53 +100,21 @@ private class BatchingExecutionContext(val delegate: ExecutionContext) extends E
     }
   }
 
-  override def execute(runnable: Runnable): Unit = {
+  override def apply(runnable: Runnable): Unit = {
     _tasksLocal.get match {
       case null ⇒
         // outside BatchingRunnable.run: start a new batch
-        delegate.execute(new BatchingRunnable(runnable :: Nil))
+        delegate(new BatchingRunnable(runnable :: Nil))
       case _ ⇒
         // inside BatchingRunnable.run: add to existing batch, existing BatchingRunnable will run it
         push(runnable)
     }
   }
-
-  def reportFailure(t: Throwable): Unit = delegate.reportFailure(t)
 }
 
-private[concurrent] object BatchingExecutionContext {
-  def apply(delegate: ExecutionContext): ExecutionContextExecutor = delegate match {
-    case already: BatchingExecutionContext ⇒ already // avoid double-wrap
-    case _                                 ⇒ new BatchingExecutionContext(delegate)
-  }
-}
-
-private class BatchingExecutorService(override val delegate: ExecutionContext with ExecutorService)
-  extends BatchingExecutionContext(delegate) with ExecutionContextExecutorService {
-  override def shutdown() { delegate.shutdown() }
-  override def shutdownNow() = delegate.shutdownNow()
-  override def isShutdown = delegate.isShutdown
-  override def isTerminated = delegate.isTerminated
-  override def awaitTermination(l: Long, timeUnit: TimeUnit) = delegate.awaitTermination(l, timeUnit)
-  override def submit[T](callable: Callable[T]) = delegate.submit(callable)
-  override def submit[T](runnable: Runnable, t: T) = delegate.submit(runnable, t)
-  override def submit(runnable: Runnable) = delegate.submit(runnable)
-  override def invokeAll[T](callables: Collection[_ <: Callable[T]]) = delegate.invokeAll(callables)
-  override def invokeAll[T](callables: Collection[_ <: Callable[T]], l: Long, timeUnit: TimeUnit) = delegate.invokeAll(callables, l, timeUnit)
-  override def invokeAny[T](callables: Collection[_ <: Callable[T]]) = delegate.invokeAny(callables)
-  override def invokeAny[T](callables: Collection[_ <: Callable[T]], l: Long, timeUnit: TimeUnit) = delegate.invokeAny(callables, l, timeUnit)
-}
-
-private[concurrent] object BatchingExecutorService {
-  def apply(delegate: ExecutorService, reporter: Throwable ⇒ Unit): ExecutionContextExecutorService =
-    new BatchingExecutorService(ExecutionContext.fromExecutorService(delegate, reporter))
-
-  def apply(delegate: ExecutorService): ExecutionContextExecutorService = delegate match {
-    case already: BatchingExecutorService ⇒
-      already
-    case ec: ExecutionContext with ExecutorService ⇒
-      new BatchingExecutorService(ec)
-    case _ ⇒
-      new BatchingExecutorService(ExecutionContext.fromExecutorService(delegate, ExecutionContext.defaultReporter))
+private[concurrent] object BatchingExecute {
+  def apply(delegate: Runnable ⇒ Unit): Runnable ⇒ Unit = delegate match {
+    case already: BatchingExecute ⇒ already // avoid double-wrap
+    case _                        ⇒ new BatchingExecute(delegate)
   }
 }

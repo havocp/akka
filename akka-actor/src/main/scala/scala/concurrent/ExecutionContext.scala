@@ -35,28 +35,13 @@ object AkkaExecutionContext {
    * because tasks created within other tasks will block
    * on the outer task completing.
    */
-  def batching(context: ExecutionContext): ExecutionContextExecutor =
-    impl.BatchingExecutionContext(context)
+  def batching(delegate: ExecutionContext): ExecutionContextExecutor = new ExecutionContextExecutor() {
+    // TODO this must not be the right way to do this.
+    private val _execute: Runnable ⇒ Unit = batching(delegate.execute)
+    override def execute(r: Runnable): Unit = _execute(r)
+    override def reportFailure(t: Throwable): Unit = delegate.reportFailure(t)
+  }
 
-  /**
-   * Like `scala.concurrent.ExecutionContext.batching` but
-   * decorates a `java.util.concurrent.ExecutorService` rather than
-   * a `scala.concurrent.ExecutionContext`. The `reporter` parameter
-   * is used to implement the `scala.concurrent.ExecutionContext.reportFailure`
-   * method.
-   */
-  def batchingExecutorService(service: ExecutorService, reporter: Throwable ⇒ Unit): ExecutionContextExecutorService =
-    impl.BatchingExecutorService(service, reporter)
-
-  /**
-   * Like `scala.concurrent.ExecutionContext.batching` but
-   * decorates a `java.util.concurrent.ExecutorService`
-   * rather than a `scala.concurrent.ExecutionContext`.
-   * To implement `scala.concurrent.ExecutionContext.reportFailure`, if
-   * the provided `java.util.concurrent.ExecutorService` already implements
-   * `scala.concurrent.ExecutionContext` then the result will delegate to it;
-   * otherwise, `scala.concurrent.ExecutionContext.defaultReporter` will be used.
-   */
-  def batchingExecutorService(service: ExecutorService): ExecutionContextExecutorService =
-    impl.BatchingExecutorService(service)
+  def batching(execute: Runnable ⇒ Unit): Runnable ⇒ Unit =
+    impl.BatchingExecute(execute)
 }
