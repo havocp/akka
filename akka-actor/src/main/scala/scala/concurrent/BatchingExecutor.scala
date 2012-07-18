@@ -6,21 +6,36 @@
 **                          |/                                          **
 \*                                                                      */
 
-package scala.concurrent.impl
+package scala.concurrent
 
 import java.util.Collection
-import java.util.concurrent.{ Callable, ExecutorService, TimeUnit }
+import java.util.concurrent.{ Callable, Executor, TimeUnit }
 import scala.concurrent.util.Duration
-import scala.concurrent.{ Awaitable, BlockContext, ExecutionContext, ExecutionContextExecutor, ExecutionContextExecutorService, CanAwait }
-import scala.util.control.NonFatal
 
 /**
- * An execute() function which attempts to keep related Runnable batched on the
- * same thread, which may give better performance by 1) avoiding dispatch
- * through the ExecutionContext's queue and 2) creating a simple
- * "CPU affinity" for a related chain of tasks.
+ * Mixin trait for an Executor
+ * which groups multiple nested `Runnable.run()` calls
+ * into a single Runnable passed to the original
+ * Executor. This can be a useful optimization
+ * because it bypasses the original context's task
+ * queue and keeps related (nested) code on a single
+ * thread which may improve CPU affinity. However,
+ * if tasks passed to the Executor are blocking
+ * or expensive, this optimization can prevent work-stealing
+ * and make performance worse. Also, some ExecutionContext
+ * may be fast enough natively that this optimization just
+ * adds overhead.
+ * The default ExecutionContext.global is already batching
+ * or fast enough not to benefit from it; while
+ * `fromExecutor` and `fromExecutorService` do NOT add
+ * this optimization since they don't know whether the underlying
+ * executor will benefit from it.
+ * A batching executor can create deadlocks if code does
+ * not use `scala.concurrent.blocking` when it should,
+ * because tasks created within other tasks will block
+ * on the outer task completing.
  */
-private class BatchingExecute(val delegate: Runnable ⇒ Unit) extends Function1[Runnable, Unit] {
+trait BatchingExecutor extends Executor {
 
   // invariant: if "_tasksLocal.get ne null" then we are inside
   // BatchingRunnable.run; if it is null, we are outside
@@ -56,7 +71,7 @@ private class BatchingExecute(val delegate: Runnable ⇒ Unit) extends Function1
           // make a new BatchingRunnable and send it to
           // another thread
           _tasksLocal set Nil
-          delegate(new BatchingRunnable(list))
+          unbatchedExecute(new BatchingRunnable(list))
         }
       }
 
@@ -65,8 +80,6 @@ private class BatchingExecute(val delegate: Runnable ⇒ Unit) extends Function1
     }
   }
 
-  // ONLY BatchingRunnable should be sent directly
-  // to delegate
   private class BatchingRunnable(val initial: List[Runnable]) extends Runnable {
     // this method runs in the delegate ExecutionContext's thread
     override def run(): Unit = {
@@ -88,7 +101,7 @@ private class BatchingExecute(val delegate: Runnable ⇒ Unit) extends Function1
                 // up to the invoking executor
                 val remaining = _tasksLocal.get
                 _tasksLocal set Nil
-                delegate(new BatchingRunnable(remaining))
+                unbatchedExecute(new BatchingRunnable(remaining))
                 throw t // rethrow
             }
           }
@@ -100,21 +113,16 @@ private class BatchingExecute(val delegate: Runnable ⇒ Unit) extends Function1
     }
   }
 
-  override def apply(runnable: Runnable): Unit = {
+  private[this] def unbatchedExecute(r: BatchingRunnable): Unit = super.execute(r)
+
+  abstract override def execute(runnable: Runnable): Unit = {
     _tasksLocal.get match {
       case null ⇒
         // outside BatchingRunnable.run: start a new batch
-        delegate(new BatchingRunnable(runnable :: Nil))
+        unbatchedExecute(new BatchingRunnable(runnable :: Nil))
       case _ ⇒
         // inside BatchingRunnable.run: add to existing batch, existing BatchingRunnable will run it
         push(runnable)
     }
-  }
-}
-
-private[concurrent] object BatchingExecute {
-  def apply(delegate: Runnable ⇒ Unit): Runnable ⇒ Unit = delegate match {
-    case already: BatchingExecute ⇒ already // avoid double-wrap
-    case _                        ⇒ new BatchingExecute(delegate)
   }
 }
