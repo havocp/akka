@@ -54,7 +54,7 @@ class JavaFutureSpec extends JavaFutureTests with JUnitSuite
 @org.junit.runner.RunWith(classOf[org.scalatest.junit.JUnitRunner])
 class FutureSpec extends AkkaSpec with Checkers with BeforeAndAfterAll with DefaultTimeout {
   import FutureSpec._
-  implicit val ec: ExecutionContext = system.dispatcher
+  implicit val ec: ExecutionContext = scala.concurrent.AkkaExecutionContext.batching(system.dispatcher)
   "A Promise" when {
     "never completed" must {
       behave like emptyFuture(_(Promise().future))
@@ -881,6 +881,29 @@ class FutureSpec extends AkkaSpec with Checkers with BeforeAndAfterAll with Defa
           FutureSpec.ready(l2, TestLatch.DefaultTimeout)
         }
         FutureSpec.ready(complex, timeout.duration) must be('completed)
+      }
+
+      "re-use the same thread for nested futures with batching ExecutionContext" in {
+        val failCount = new java.util.concurrent.atomic.AtomicInteger
+        val f = Future() flatMap { _ ⇒
+          val originalThread = Thread.currentThread
+          // run some nested futures
+          val nested =
+            for (i ← 1 to 100)
+              yield Future({
+              if (Thread.currentThread ne originalThread)
+                failCount.incrementAndGet
+            }) flatMap { _ ⇒
+              // another level of nesting
+              Future({
+                if (Thread.currentThread ne originalThread)
+                  failCount.incrementAndGet
+              })
+            }
+          Future.sequence(nested)
+        }
+        Await.ready(f, timeout.duration)
+        failCount.get must be(0)
       }
 
       //FIXME DATAFLOW
