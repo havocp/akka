@@ -113,7 +113,7 @@ trait BatchingExecutor extends Executor {
     }
   }
 
-  private[this] def unbatchedExecute(r: BatchingRunnable): Unit = super.execute(r)
+  private[this] def unbatchedExecute(r: Runnable): Unit = super.execute(r)
 
   abstract override def execute(runnable: Runnable): Unit = {
     _tasksLocal.get match {
@@ -121,8 +121,14 @@ trait BatchingExecutor extends Executor {
         // outside BatchingRunnable.run: start a new batch
         unbatchedExecute(new BatchingRunnable(runnable :: Nil))
       case _ ⇒
-        // inside BatchingRunnable.run: add to existing batch, existing BatchingRunnable will run it
-        push(runnable)
+        // inside BatchingRunnable.run
+        if (batchable(runnable))
+          push(runnable) // add to existing batch
+        else
+          unbatchedExecute(runnable) // bypass batching mechanism
     }
   }
+
+  /** Override this to force certain runnables not to batch, by default they all batch. */
+  def batchable(runnable: Runnable): Boolean = true
 }
