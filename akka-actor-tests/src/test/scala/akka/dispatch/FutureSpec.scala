@@ -890,15 +890,14 @@ class FutureSpec extends AkkaSpec with Checkers with BeforeAndAfterAll with Defa
           // run some nested futures
           val nested =
             for (i ← 1 to 100)
-              yield Future({
+              yield Future.successful("abc") flatMap { _ ⇒
               if (Thread.currentThread ne originalThread)
                 failCount.incrementAndGet
-            }) flatMap { _ ⇒
               // another level of nesting
-              Future({
+              Future.successful("xyz") map { _ ⇒
                 if (Thread.currentThread ne originalThread)
                   failCount.incrementAndGet
-              })
+              }
             }
           Future.sequence(nested)
         }

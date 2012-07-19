@@ -39,6 +39,11 @@ class Dispatcher(
   private class LazyExecutorServiceDelegate(factory: ExecutorServiceFactory) extends ExecutorServiceDelegate with BatchingExecutor {
     lazy val executor: ExecutorService = factory.createExecutorService
     def copy(): LazyExecutorServiceDelegate = new LazyExecutorServiceDelegate(factory)
+
+    override def batchable(runnable: Runnable) = runnable match {
+      case invocation: TaskInvocation ⇒ invocation.batchable
+      case _                          ⇒ false
+    }
   }
 
   @volatile private var executorServiceDelegate: LazyExecutorServiceDelegate =

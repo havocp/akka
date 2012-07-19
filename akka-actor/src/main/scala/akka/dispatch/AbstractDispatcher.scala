@@ -15,7 +15,7 @@ import scala.concurrent.forkjoin.{ ForkJoinTask, ForkJoinPool }
 import akka.util.{ Unsafe, NonFatal, Index }
 import scala.concurrent.util.Duration
 import scala.concurrent.ExecutionContext
-import scala.concurrent.{ Await, Awaitable }
+import scala.concurrent.{ Await, Awaitable, OnCompleteRunnable }
 
 final case class Envelope private (val message: Any, val sender: ActorRef)
 
@@ -121,6 +121,8 @@ final case class TaskInvocation(eventStream: EventStream, runnable: Runnable, cl
     try runnable.run() catch {
       case NonFatal(e) ⇒ eventStream.publish(Error(e, "TaskInvocation", this.getClass, e.getMessage))
     } finally cleanup()
+
+  private[akka] def batchable = runnable.isInstanceOf[OnCompleteRunnable]
 }
 
 /**
